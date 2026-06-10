@@ -25,6 +25,7 @@ export default function WatchClient({ email }: { email: string }) {
   const [otp, setOtp] = useState<OtpData | null>(null);
   const [error, setError] = useState("");
   const [obscured, setObscured] = useState(false);
+  const [kicked, setKicked] = useState(false);
   const [wm, setWm] = useState({ top: "12%", left: "8%", time: "" });
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -98,6 +99,43 @@ export default function WatchClient({ email }: { email: string }) {
       window.removeEventListener("focus", onFocus);
     };
   }, []);
+
+  // Session heartbeat: poll the server so this device is kicked out the moment
+  // its session is revoked — e.g. the same key logs in on another device, which
+  // rotates the sid. Without this, a stale device keeps playing until reload.
+  useEffect(() => {
+    let stop = false;
+
+    const check = async () => {
+      try {
+        const res = await fetch("/api/session", { cache: "no-store" });
+        if (!stop && res.status === 401) {
+          stop = true;
+          try {
+            playerRef.current?.video?.pause?.();
+          } catch {
+            /* best-effort */
+          }
+          setKicked(true);
+          setTimeout(() => router.push("/"), 3000);
+        }
+      } catch {
+        /* ignore transient network errors — only an explicit 401 kicks */
+      }
+    };
+
+    const id = setInterval(check, 10000);
+    const onVisible = () => {
+      if (!document.hidden) check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      stop = true;
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [router]);
 
   // App-level moving watermark: an overlay WE own (independent of VdoCipher's
   // in-player watermark), so the viewer can't disable it and any recording
@@ -253,9 +291,17 @@ export default function WatchClient({ email }: { email: string }) {
             </div>
 
             {/* Black-out shown when the page is hidden / unfocused. */}
-            {obscured ? (
+            {obscured && !kicked ? (
               <div style={obscureStyle}>
                 Playback paused — return to this tab to continue.
+              </div>
+            ) : null}
+
+            {/* Shown when this session is revoked (key used on another device). */}
+            {kicked ? (
+              <div style={obscureStyle}>
+                You’ve been signed out because this access key was opened on
+                another device. Redirecting…
               </div>
             ) : null}
           </div>
